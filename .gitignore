@@ -1,0 +1,42 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments (root and nested)
+.venv/
+venv/
+env/
+converter/.venv311/
+converter/venv/
+
+# VS Code / Editor
+.vscode/
+.idea/
+
+# Environment files
+.env
+converter/.env
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+
+# Project output
+converter/output/
+
+# Jupyter
+.ipynb_checkpoints/
