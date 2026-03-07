@@ -35,8 +35,11 @@ dist/
 *.tmp
 *.temp
 
-# Project output
-converter/output/
+# Project I/O folders
+converter/input/*
+!converter/input/.gitkeep
+converter/output/*
+!converter/output/.gitkeep
 
 # Jupyter
 .ipynb_checkpoints/
