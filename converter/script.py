@@ -9,13 +9,21 @@ import torch
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
 
-VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_MODEL_FILE = "RealESRGAN_x4plus.pth"
 DEFAULT_SCALE = 2
 DEFAULT_OUTPUT_FORMAT = "original"
-DEFAULT_WEBP_QUALITY = 90
-DEFAULT_JPG_QUALITY = 95
+# Valores ajustados para reduzir o tamanho final dos arquivos,
+# mantendo boa qualidade visual.
+DEFAULT_WEBP_QUALITY = 80
+DEFAULT_JPG_QUALITY = 85
 VALID_OUTPUT_FORMATS = {"original", "png", "webp", "jpg"}
+
+# RealESRGAN execution defaults (tunable via env)
+DEFAULT_TILE = 0
+DEFAULT_TILE_PAD = 10
+DEFAULT_PRE_PAD = 0
+DEFAULT_GPU_ID = 0
 
 
 def load_env_file(base_dir: Path) -> None:
@@ -72,6 +80,43 @@ def ask_yes_no(prompt: str, default_yes: bool = True) -> bool:
         print("Resposta invalida. Digite s ou n.")
 
 
+def ask_dimensions() -> tuple[int | None, int | None, bool]:
+    """Ask user for target dimensions and aspect behavior."""
+    apply_resize = ask_yes_no("Deseja redimensionar as imagens?", default_yes=False)
+    if not apply_resize:
+        return None, None, True
+
+    while True:
+        try:
+            width_input = input("Digite a largura (width) em pixels (deixe vazio para manter): ").strip()
+            height_input = input("Digite a altura (height) em pixels (deixe vazio para manter): ").strip()
+
+            width = int(width_input) if width_input else None
+            height = int(height_input) if height_input else None
+
+            if width is not None and width < 1:
+                print("Largura deve ser >= 1.")
+                continue
+            if height is not None and height < 1:
+                print("Altura deve ser >= 1.")
+                continue
+
+            if width is None and height is None:
+                print("Especifique ao menos largura ou altura.")
+                continue
+
+            keep_aspect = True
+            if width is not None and height is not None:
+                keep_aspect = ask_yes_no(
+                    "Manter proporcao usando largura/altura como limite (sem distorcer)?",
+                    default_yes=True,
+                )
+
+            return width, height, keep_aspect
+        except ValueError:
+            print("Entrada invalida. Digite numeros inteiros.")
+
+
 def resolve_output_file(image_path: Path, output_dir: Path, output_format: str) -> Path:
     if output_format == "webp":
         return output_dir / image_path.with_suffix(".webp").name
@@ -86,7 +131,8 @@ def get_save_params(output_format: str, webp_quality: int, jpg_quality: int) -> 
     if output_format == "webp":
         return [cv2.IMWRITE_WEBP_QUALITY, webp_quality]
     if output_format == "png":
-        return [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        # 0 = sem compressao, 9 = maxima compressao (mais lento, arquivos menores)
+        return [cv2.IMWRITE_PNG_COMPRESSION, 9]
     if output_format == "jpg":
         return [cv2.IMWRITE_JPEG_QUALITY, jpg_quality]
     return []
@@ -116,7 +162,14 @@ def save_image(
     return True
 
 
-def build_upsampler(model_path: Path, use_half: bool) -> RealESRGANer:
+def build_upsampler(
+    model_path: Path,
+    use_half: bool,
+    tile: int,
+    tile_pad: int,
+    pre_pad: int,
+    gpu_id: int | None,
+) -> RealESRGANer:
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
@@ -130,12 +183,40 @@ def build_upsampler(model_path: Path, use_half: bool) -> RealESRGANer:
         scale=4,
         model_path=str(model_path),
         model=model,
-        tile=0,
-        tile_pad=10,
-        pre_pad=0,
+        tile=tile,
+        tile_pad=tile_pad,
+        pre_pad=pre_pad,
         half=use_half,
-        gpu_id=0 if torch.cuda.is_available() else None,
+        gpu_id=gpu_id,
     )
+
+
+def _choose_resize_interpolation(src_w: int, src_h: int, dst_w: int, dst_h: int) -> int:
+    # INTER_AREA preserves details better when shrinking, INTER_CUBIC is softer when enlarging.
+    if dst_w < src_w or dst_h < src_h:
+        return cv2.INTER_AREA
+    return cv2.INTER_CUBIC
+
+
+def resize_image(image, width: int | None, height: int | None, keep_aspect: bool = True):
+    """Resize image. Supports exact size or bounded resize preserving aspect ratio."""
+    h, w = image.shape[:2]
+
+    if width is None and height is not None:
+        ratio = height / h
+        width = int(w * ratio)
+    elif height is None and width is not None:
+        ratio = width / w
+        height = int(h * ratio)
+
+    if width and height:
+        if keep_aspect:
+            ratio = min(width / w, height / h)
+            width = max(1, int(w * ratio))
+            height = max(1, int(h * ratio))
+        interpolation = _choose_resize_interpolation(w, h, width, height)
+        return cv2.resize(image, (width, height), interpolation=interpolation)
+    return image
 
 
 def convert_only_image(
@@ -144,10 +225,16 @@ def convert_only_image(
     output_format: str,
     webp_quality: int,
     jpg_quality: int,
+    resize_width: int | None = None,
+    resize_height: int | None = None,
+    keep_aspect: bool = True,
 ) -> bool:
     img = load_image(image_path)
     if img is None:
         return False
+
+    if resize_width or resize_height:
+        img = resize_image(img, resize_width, resize_height, keep_aspect=keep_aspect)
 
     output_file = resolve_output_file(image_path, output_dir, output_format)
     try:
@@ -165,6 +252,9 @@ def run_upscale_for_image(
     output_format: str,
     webp_quality: int,
     jpg_quality: int,
+    resize_width: int | None = None,
+    resize_height: int | None = None,
+    keep_aspect: bool = True,
 ) -> bool:
     img = load_image(image_path)
     if img is None:
@@ -174,6 +264,10 @@ def run_upscale_for_image(
 
     try:
         output, _ = upsampler.enhance(img, outscale=scale)
+
+        if resize_width or resize_height:
+            output = resize_image(output, resize_width, resize_height, keep_aspect=keep_aspect)
+
         return save_image(output_file, output, output_format, webp_quality, jpg_quality)
     except (ValueError, RuntimeError, OSError) as exc:
         print(f"[ERRO] Nao foi possivel processar {image_path.name}: {exc}")
@@ -206,6 +300,10 @@ def validate_environment(
 def run_batch() -> None:
     input_dir, output_dir, models_dir = get_project_paths()
     load_env_file(base_dir=input_dir.parent)
+
+    # Small speedup on CUDA for some conv workloads
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
 
     model_file = os.getenv("REALESRGAN_MODEL_FILE", DEFAULT_MODEL_FILE)
 
@@ -240,12 +338,42 @@ def run_batch() -> None:
     webp_quality = min(100, max(1, webp_quality))
     jpg_quality = min(100, max(1, jpg_quality))
 
+    try:
+        tile = int(os.getenv("REALESRGAN_TILE", str(DEFAULT_TILE)))
+    except ValueError:
+        print(f"[AVISO] REALESRGAN_TILE invalido. Usando {DEFAULT_TILE}.")
+        tile = DEFAULT_TILE
+
+    try:
+        tile_pad = int(os.getenv("REALESRGAN_TILE_PAD", str(DEFAULT_TILE_PAD)))
+    except ValueError:
+        print(f"[AVISO] REALESRGAN_TILE_PAD invalido. Usando {DEFAULT_TILE_PAD}.")
+        tile_pad = DEFAULT_TILE_PAD
+
+    try:
+        pre_pad = int(os.getenv("REALESRGAN_PRE_PAD", str(DEFAULT_PRE_PAD)))
+    except ValueError:
+        print(f"[AVISO] REALESRGAN_PRE_PAD invalido. Usando {DEFAULT_PRE_PAD}.")
+        pre_pad = DEFAULT_PRE_PAD
+
+    try:
+        env_gpu_id = os.getenv("REALESRGAN_GPU_ID", str(DEFAULT_GPU_ID)).strip().lower()
+        gpu_id = None if env_gpu_id in {"none", "cpu", ""} else int(env_gpu_id)
+    except ValueError:
+        print(f"[AVISO] REALESRGAN_GPU_ID invalido. Usando {DEFAULT_GPU_ID}.")
+        gpu_id = DEFAULT_GPU_ID
+
+    tile = max(0, tile)
+    tile_pad = max(0, tile_pad)
+    pre_pad = max(0, pre_pad)
+
     output_format = ask_choice(
         "Formato final das imagens",
         VALID_OUTPUT_FORMATS,
         env_output_format,
     )
     apply_upscale = ask_yes_no("Deseja aplicar upscale para melhorar a qualidade?", default_yes=True)
+    resize_width, resize_height, keep_aspect = ask_dimensions()
 
     if not validate_environment(
         input_dir=input_dir,
@@ -261,6 +389,10 @@ def run_batch() -> None:
         upsampler = build_upsampler(
             model_path=model_path,
             use_half=torch.cuda.is_available(),
+            tile=tile,
+            tile_pad=tile_pad,
+            pre_pad=pre_pad,
+            gpu_id=(gpu_id if torch.cuda.is_available() else None),
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -278,6 +410,9 @@ def run_batch() -> None:
     else:
         print("Modo: somente conversao")
     print(f"Formato de saida: {output_format}")
+    if resize_width or resize_height:
+        print(f"Redimensionamento: {resize_width or 'auto'} x {resize_height or 'auto'}")
+        print(f"Manter proporcao: {'sim' if keep_aspect else 'nao'}")
 
     success = 0
     failed = 0
@@ -293,6 +428,9 @@ def run_batch() -> None:
                 output_format=output_format,
                 webp_quality=webp_quality,
                 jpg_quality=jpg_quality,
+                resize_width=resize_width,
+                resize_height=resize_height,
+                keep_aspect=keep_aspect,
             )
         else:
             ok = convert_only_image(
@@ -301,6 +439,9 @@ def run_batch() -> None:
                 output_format=output_format,
                 webp_quality=webp_quality,
                 jpg_quality=jpg_quality,
+                resize_width=resize_width,
+                resize_height=resize_height,
+                keep_aspect=keep_aspect,
             )
 
         if ok:
