@@ -1,0 +1,217 @@
+PROMPT — FRONTEND IMAGE CONVERTER
+===================================
+
+Crie um frontend completo para um conversor de imagens. Siga todas as instruções abaixo à risca.
+
+
+## STACK
+
+- Next.js 15 com App Router
+- TypeScript
+- Tailwind CSS v4
+- shadcn/ui para componentes base
+- JSZip para empacotar múltiplas imagens em ZIP
+- Canvas API nativa do browser para processamento de imagens (sem backend)
+
+
+## ESTRUTURA DE PASTAS
+
+frontend/
+├── app/
+│   ├── layout.tsx
+│   ├── page.tsx
+│   └── globals.css
+├── components/
+│   ├── DropZone.tsx
+│   ├── FileList.tsx
+│   ├── ConversionSettings.tsx
+│   ├── ConvertButton.tsx
+│   └── Footer.tsx
+├── lib/
+│   ├── imageProcessor.ts   ← lógica de conversão e redimensionamento via Canvas
+│   └── zipper.ts           ← lógica de empacotamento ZIP via JSZip
+├── public/
+├── tailwind.config.ts
+├── next.config.ts
+└── package.json
+
+
+## FUNCIONALIDADES
+
+### Upload de arquivos
+- Área de drag-and-drop central ocupando destaque na página
+- Aceita múltiplos arquivos simultaneamente (JPG, JPEG, PNG, WebP)
+- Também aceita clique para abrir o seletor de arquivos nativo
+- Exibe lista dos arquivos adicionados com nome, tamanho e um botão para remover individualmente
+- Permite adicionar mais arquivos após o primeiro upload (não substitui a lista, acumula)
+- Extensões aceitas: .jpg, .jpeg, .png, .webp
+
+### Configurações (aplicadas a todos os arquivos do batch)
+As configurações ficam abaixo da dropzone, em uma seção clara e organizada.
+
+1. **Formato de saída**
+   - Opções: Original (mantém o formato do arquivo), PNG, WebP, JPG
+   - Interface: segmented control ou radio group horizontal
+   - Padrão: Original
+
+2. **Qualidade** (aparece condicionalmente)
+   - Só exibir quando o formato selecionado for WebP ou JPG
+   - Slider de 1 a 100
+   - WebP padrão: 80
+   - JPG padrão: 85
+   - Exibir o valor numérico ao lado do slider
+
+3. **Redimensionamento**
+   - Toggle/switch para ativar ou desativar
+   - Quando ativo, exibir dois campos numéricos: Largura (px) e Altura (px)
+   - Ambos são opcionais — o usuário pode preencher apenas um
+   - Checkbox "Manter proporção" (checked por padrão)
+   - Quando "Manter proporção" está ativo e só um dos campos é preenchido, o outro é calculado automaticamente
+   - Quando ambos são preenchidos e "Manter proporção" está ativo, usa o menor ratio (fit dentro do box, sem distorcer)
+
+### Processamento
+- Botão "Converter" proeminente, desabilitado se não houver arquivos
+- Durante o processamento: mostrar progresso por arquivo (ex: "3 de 12")
+- Processamento via Canvas API:
+  - Carrega a imagem em um elemento canvas
+  - Aplica redimensionamento se configurado
+  - Exporta no formato e qualidade desejados via canvas.toBlob()
+- Toda a lógica de processamento fica em lib/imageProcessor.ts
+
+### Download
+- Se apenas 1 arquivo: download direto do arquivo processado
+- Se 2 ou mais arquivos: empacotar em ZIP via JSZip e fazer download do ZIP
+- Nome do ZIP: "imagens-convertidas.zip"
+- Nome de cada arquivo dentro do ZIP: mesmo nome original, com a extensão atualizada para o formato de saída
+- Quando o formato é "Original", mantém a extensão original
+
+### Estados de UI
+- Idle: estado inicial sem arquivos
+- Files added: lista de arquivos visível, configurações e botão converter ativos
+- Processing: botão em estado de carregamento com progresso visível, dropzone desabilitada
+- Done: mensagem de sucesso e opção de converter mais arquivos (limpa a lista)
+- Error: mensagem de erro por arquivo que falhar, sem interromper o batch
+
+
+## DESIGN E VISUAL
+
+### Identidade visual
+- Tema escuro como padrão (dark mode)
+- Paleta: fundo #0a0a0a, superfícies #141414 e #1e1e1e, bordas sutis em #2a2a2a
+- Cor de destaque: branco puro (#ffffff) para elementos primários e texto principal
+- Cor de ação (botão principal, hover states): use um azul-slate discreto (#3b82f6) ou branco — sem cores vibrantes demais
+- Tipografia: Inter (via next/font)
+- Border radius consistente: sm para inputs, md para cards e dropzone
+- Sem gradientes chamativos, sem glassmorphism exagerado
+
+### Layout
+- Página única, centralizada, largura máxima de 720px
+- Header simples: nome do app à esquerda ("Image Converter") em fonte leve, sem logo
+- Dropzone: área grande com borda dashed sutil, texto de instrução discreto ("Arraste imagens aqui ou clique para selecionar"), sem ícones coloridos
+- Configurações: layout em grid limpo, labels pequenos em cinza, controles alinhados
+- Botão converter: largura total, altura generosa, tipografia média
+- Footer: uma linha, centralizado, link discreto para o portfólio
+
+### Tom
+- Sem emojis em nenhuma parte da interface
+- Sem textos genéricos de marketing ("Rápido e fácil!", "Poderoso!")
+- Mensagens diretas e curtas: "Arraste imagens aqui", "Converter", "Download pronto"
+- Erros diretos: "Não foi possível processar arquivo.jpg"
+
+### Responsividade
+- Funcional em mobile (largura mínima 320px)
+- Em telas pequenas, as configurações empilham verticalmente
+- Dropzone mantém área mínima de toque adequada
+
+
+## FOOTER
+
+Uma linha simples no rodapé:
+Texto: "Desenvolvido por Vini"
+"Vini" é um link para https://vinideveloper.com.br/ que abre em nova aba (_blank)
+Estilo discreto: texto pequeno, cor cinza suave, sem decoração visual excessiva
+
+
+## COMPORTAMENTO TÉCNICO DETALHADO
+
+### lib/imageProcessor.ts
+Exportar uma função principal:
+
+```ts
+processImage(
+  file: File,
+  options: {
+    format: 'original' | 'png' | 'webp' | 'jpg'
+    quality: number          // 0 a 1 (canvas.toBlob usa 0-1)
+    resize: {
+      enabled: boolean
+      width: number | null
+      height: number | null
+      keepAspect: boolean
+    }
+  }
+): Promise<{ blob: Blob; filename: string }>
+```
+
+Lógica interna:
+1. Criar um HTMLImageElement e carregar o File via URL.createObjectURL
+2. Criar um HTMLCanvasElement com as dimensões finais
+3. Aplicar redimensionamento se enabled:
+   - Se só largura: calcular altura pela proporção
+   - Se só altura: calcular largura pela proporção
+   - Se ambos com keepAspect: usar Math.min(targetW/srcW, targetH/srcH) como ratio
+   - Se ambos sem keepAspect: usar exatamente as dimensões fornecidas
+4. Desenhar a imagem no canvas com ctx.drawImage
+5. Exportar via canvas.toBlob com o mimeType e quality corretos
+6. Retornar o Blob e o filename com extensão correta
+7. Revogar a URL com URL.revokeObjectURL após uso
+
+MimeType map:
+- png → 'image/png' (quality ignorada pelo canvas)
+- webp → 'image/webp'
+- jpg → 'image/jpeg'
+- original → usar file.type original
+
+### lib/zipper.ts
+Exportar uma função:
+
+```ts
+downloadAsZip(files: { blob: Blob; filename: string }[]): Promise<void>
+```
+
+Usa JSZip para criar o zip, adicionar cada blob com seu filename, gerar como Blob e disparar download via link element temporário.
+
+### Fluxo de estado (em page.tsx ou hook dedicado)
+- files: File[]
+- settings: { format, quality, resize }
+- status: 'idle' | 'processing' | 'done' | 'error'
+- progress: { current: number; total: number }
+- results: { filename: string; blob: Blob; error?: string }[]
+
+Ao clicar em "Converter":
+1. Setar status = 'processing'
+2. Iterar sobre files, chamar processImage para cada um, atualizar progress
+3. Coletar resultados
+4. Se 1 resultado: download direto
+5. Se 2+: chamar downloadAsZip
+6. Setar status = 'done'
+
+
+## DEPLOY
+
+- O projeto deve estar pronto para deploy na Vercel sem configuração adicional
+- Não usar nenhuma API Route do Next.js — todo processamento é client-side
+- Adicionar "use client" nos componentes que usam hooks ou eventos de browser
+- next.config.ts sem configurações especiais necessárias
+
+
+## O QUE NÃO FAZER
+
+- Não usar emojis em nenhum lugar da UI
+- Não usar textos genéricos de marketing
+- Não criar backend, API routes, ou qualquer servidor
+- Não usar bibliotecas de processamento de imagem externas (sharp, jimp, etc) — apenas Canvas API
+- Não criar páginas adicionais além de app/page.tsx
+- Não adicionar autenticação, histórico, ou qualquer feature além das listadas
+- Não usar cores vibrantes, gradientes chamativos ou glassmorphism
+- Não adicionar animações pesadas — apenas transições sutis de opacity/transform
